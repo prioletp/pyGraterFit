@@ -1,5 +1,7 @@
 # pyGraterFit
 
+![pyGraterFit banner](docs/assets/pyGraterFit-banner.png)
+
 Fitting tools for [`pyGrater`](https://github.com/prioletp/pyGrater) dust-disk
 models.
 
