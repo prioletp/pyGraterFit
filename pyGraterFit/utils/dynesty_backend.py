@@ -5,6 +5,8 @@ import time
 
 import numpy as np
 
+DEFAULT_LOG_LIKELIHOOD_FLOOR = -1.0e6
+
 
 def _dynesty():
     try:
@@ -13,20 +15,52 @@ def _dynesty():
     except ImportError as exc:
         raise ImportError(
             "Nested sampling requires dynesty. Install "
-            "fitters_for_pyGrater with its current dependencies."
+            "pyGraterFit with its current dependencies."
         ) from exc
     return dynesty, dyfunc
 
 
 def normalized_weights(results):
     """Return normalized posterior weights from dynesty results."""
+    if hasattr(results, "importance_weights"):
+        weights = np.asarray(results.importance_weights(), dtype=np.float64)
+        total = weights.sum()
+        if np.isfinite(total) and total > 0 and np.all(np.isfinite(weights)):
+            return weights / total
+
     log_weights = np.asarray(results.logwt, dtype=np.float64)
-    log_evidence = float(np.asarray(results.logz)[-1])
-    weights = np.exp(log_weights - log_evidence)
+    finite = np.isfinite(log_weights)
+    if not np.any(finite):
+        raise RuntimeError("dynesty returned no finite posterior weights.")
+    log_norm = np.logaddexp.reduce(log_weights[finite])
+    weights = np.zeros_like(log_weights)
+    weights[finite] = np.exp(log_weights[finite] - log_norm)
     total = weights.sum()
     if not np.isfinite(total) or total <= 0:
         raise RuntimeError("dynesty returned invalid posterior weights.")
     return weights / total
+
+
+class FiniteLogLikelihood:
+    """Pickle-safe likelihood adapter that never returns NaN or +/-inf."""
+
+    def __init__(self, log_likelihood, floor=DEFAULT_LOG_LIKELIHOOD_FLOOR):
+        self.log_likelihood = log_likelihood
+        self.floor = float(floor)
+
+    def __call__(self, values):
+        try:
+            value = float(self.log_likelihood(values))
+        except Exception:
+            return self.floor
+        if not np.isfinite(value):
+            return self.floor
+        return max(value, self.floor)
+
+
+def finite_log_likelihood(log_likelihood, floor=DEFAULT_LOG_LIKELIHOOD_FLOOR):
+    """Wrap a likelihood so dynesty never receives NaN or +/-inf values."""
+    return FiniteLogLikelihood(log_likelihood, floor=floor)
 
 
 def likelihood_call_count(results):
@@ -59,6 +93,7 @@ def run_dynesty(
     dynesty, _ = _dynesty()
     sampler_class = (
         dynesty.DynamicNestedSampler if dynamic else dynesty.NestedSampler)
+    safe_log_likelihood = finite_log_likelihood(log_likelihood)
     checkpoint_path = (
         None if checkpoint_file is None else Path(checkpoint_file))
     restoring = bool(
@@ -80,7 +115,7 @@ def run_dynesty(
         if slices is not None:
             sampler_kwargs["slices"] = int(slices)
         sampler = sampler_class(
-            log_likelihood, prior_transform, int(ndim), **sampler_kwargs)
+            safe_log_likelihood, prior_transform, int(ndim), **sampler_kwargs)
 
     run_kwargs = {
         "print_progress": bool(progress),

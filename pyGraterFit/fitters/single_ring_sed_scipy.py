@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import differential_evolution, dual_annealing, minimize
 
 from pyGrater import CachedSED
-from fitters_for_pyGrater.utils.parameter_handling import (
+from pyGraterFit.utils.mass import (
+    format_total_mass, single_component_total_mass)
+from pyGraterFit.utils.parameter_handling import (
     resolve_parameters, split_parameter_specifications)
 
 
@@ -175,6 +177,23 @@ class SEDFitter:
         plt.tight_layout()
         return fig
 
+    def get_total_mass(self, values=None):
+        """Return the surviving dust mass in Earth masses.
+
+        The calculation is delegated to ``SED.get_total_mass`` so SciPy,
+        MCMC, and nested fitters all use the same pyGrater mass convention.
+        ``values`` may be supplied as a free-parameter dictionary; otherwise
+        the current best-fit parameters are used.
+        """
+        values = self.best_params if values is None else values
+        return single_component_total_mass(
+            self.sed_obj, values, self._complete_parameters,
+            missing_message='Run fit() first or pass parameter values.')
+
+    def format_total_mass(self, values=None, label='Total dust mass'):
+        """Return a one-line mass summary for logs and output files."""
+        return format_total_mass(self.get_total_mass(values), label=label)
+
     def summary(self):
         if self.best_params is None:
             print('No fit result yet.')
@@ -186,4 +205,5 @@ class SEDFitter:
         print('-' * 30)
         for k, v in self.best_params.items():
             print(f'{k:<15} {v:>14.6g}')
+        print(self.format_total_mass())
         print()

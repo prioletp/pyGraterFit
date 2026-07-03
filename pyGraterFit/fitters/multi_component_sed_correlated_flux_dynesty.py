@@ -1,50 +1,63 @@
-"""Nested sampling for any number of additive optimized SED components."""
+"""Dynamic nested sampling for additive SED plus correlated-flux models."""
 
 from pathlib import Path
 
 import numpy as np
 
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.fitters.multi_component_sed_mcmc import (
-    AdditiveSEDMCMCFitter)
-from fitters_for_pyGrater.utils.dynesty_backend import (
-    resample_equal, run_dynesty)
+from pyGraterFit.fitters.multi_component_sed_correlated_flux_mcmc import (
+    AdditiveSEDCorrelatedFluxFitter,
+)
+from pyGraterFit.fitters.multi_component_sed_dynesty import (
+    _weighted_quantile,
+)
+from pyGraterFit.fitters.single_ring_sed_correlated_flux_dynesty import (
+    LOG_LIKELIHOOD_FLOOR,
+    correlated_flux_from_vlti_loader,
+)
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.utils.dynesty_backend import (
+    resample_equal,
+    run_dynesty,
+)
 
 
-def _weighted_quantile(values, weights, quantiles):
-    order = np.argsort(values)
-    values = np.asarray(values)[order]
-    cumulative = np.cumsum(np.asarray(weights, dtype=np.float64)[order])
-    cumulative /= cumulative[-1]
-    return np.interp(quantiles, cumulative, values)
+class AdditiveSEDCorrelatedFluxNestedFitter:
+    """Nested sampler for multi-ring/multi-composition correlated fluxes.
 
-
-class AdditiveSEDNestedFitter:
-    """Fit additive rings/compositions with dynamic ``dynesty``.
-
-    This uses the same component dictionaries, shared parameters, group-shared
-    parameters, and dependent-parameter callables as the additive optimized MCMC
-    fitter. Each component must retain its own ``A_norm``.
+    This is the dynesty wrapper around
+    :class:`AdditiveSEDCorrelatedFluxFitter`.  It uses the same parameter
+    handling as the additive SED fitters, including ring-shared parameters and
+    grouped total-normalization plus composition fractions.
     """
 
     def __init__(
-            self, components, star, density_distribution, size_distribution,
-            scattering_phase_function, wavelengths, fluxes, fluxes_err,
-            params_by_component, shared_parameter_names=(),
-            prior_ranges_by_component=None, shared_prior_ranges=None,
-            use_log_params=True, N_distances=400,
+            self, components=None, star=None, density_distribution=None,
+            size_distribution=None, scattering_phase_function=None,
+            correlated_flux=None, params_by_component=None,
+            sed_wavelengths=None, sed_fluxes=None, sed_flux_errors=None,
+            shared_parameter_names=(), prior_ranges_by_component=None,
+            shared_prior_ranges=None, use_log_params=True, N_distances=400,
             parallel_components='auto', max_component_workers=2,
             component_groups=None, group_shared_parameter_names=(),
-            sed_model_class=None, sed_model_kwargs=None,
-            mass_abundance_groups=None,
-            include_likelihood_normalization=True):
+            ring_visibility_groups=None, sed_model_class=None,
+            sed_model_kwargs=None, mass_abundance_groups=None,
+            include_likelihood_normalization=True,
+            normalization_mode='independent',
+            normalization_groups=None, normalization_total_ranges=None,
+            visibility_model='gaussian_ring', sed_includes_star=False,
+            normalize_each_dataset=True,
+            materials=None, ring_params=None,
+            stellar_angular_diameter_mas=0.0,
+            normalization_range=(1e25, 1e38),
+            mass_abundance_by_ring=True):
         component_arguments = {}
         if sed_model_class is not None:
             component_arguments['sed_model_class'] = sed_model_class
-        self.component_fitter = AdditiveSEDMCMCFitter(
+        self.component_fitter = AdditiveSEDCorrelatedFluxFitter(
             components, star, density_distribution, size_distribution,
-            scattering_phase_function, wavelengths, fluxes, fluxes_err,
-            params_by_component,
+            scattering_phase_function, correlated_flux, params_by_component,
+            sed_wavelengths=sed_wavelengths, sed_fluxes=sed_fluxes,
+            sed_flux_errors=sed_flux_errors,
             shared_parameter_names=shared_parameter_names,
             prior_ranges_by_component=prior_ranges_by_component,
             shared_prior_ranges=shared_prior_ranges,
@@ -53,23 +66,23 @@ class AdditiveSEDNestedFitter:
             max_component_workers=max_component_workers,
             component_groups=component_groups,
             group_shared_parameter_names=group_shared_parameter_names,
+            ring_visibility_groups=ring_visibility_groups,
             sed_model_kwargs=sed_model_kwargs,
             mass_abundance_groups=mass_abundance_groups,
+            normalization_mode=normalization_mode,
+            normalization_groups=normalization_groups,
+            normalization_total_ranges=normalization_total_ranges,
+            visibility_model=visibility_model,
+            sed_includes_star=sed_includes_star,
+            normalize_each_dataset=normalize_each_dataset,
+            include_likelihood_normalization=include_likelihood_normalization,
+            materials=materials,
+            ring_params=ring_params,
+            stellar_angular_diameter_mas=stellar_angular_diameter_mas,
+            normalization_range=normalization_range,
+            mass_abundance_by_ring=mass_abundance_by_ring,
             **component_arguments)
-
-        self.components = self.component_fitter.components
-        self.component_names = self.component_fitter.component_names
-        self.param_names = self.component_fitter.param_names
-        self.ndim = self.component_fitter.ndim
-        self.log_params = self.component_fitter.log_params
-        self.prior_ranges = self.component_fitter.prior_ranges
-        self.obs = self.component_fitter.obs
-        self.obs_err = self.component_fitter.obs_err
-        self.wavelengths = self.component_fitter.wavelengths
-        self._log_likelihood_normalization = (
-            -np.sum(np.log(self.obs_err * np.sqrt(2.0 * np.pi)))
-            if include_likelihood_normalization else 0.0)
-
+        self._mirror_component_fitter_state()
         self.result = None
         self.samples = None
         self.weights = None
@@ -77,6 +90,7 @@ class AdditiveSEDNestedFitter:
         self.equal_weight_samples = None
         self.best_params = None
         self.best_chi2 = np.inf
+        self.best_chi2_components = None
         self.posterior_summary = None
         self.log_evidence = None
         self.log_evidence_error = None
@@ -84,11 +98,27 @@ class AdditiveSEDNestedFitter:
         self.sampler = None
         self.sampling_diagnostics = None
 
+    def _mirror_component_fitter_state(self):
+        self.components = self.component_fitter.components
+        self.component_names = self.component_fitter.component_names
+        self.param_names = self.component_fitter.param_names
+        self.ndim = self.component_fitter.ndim
+        self.log_params = self.component_fitter.log_params
+        self.prior_ranges = self.component_fitter.prior_ranges
+        self.wavelengths = self.component_fitter.model_wavelengths_micron
+        self.n_observations = self.component_fitter.n_observations
+        self._log_likelihood_normalization = (
+            self.component_fitter._log_likelihood_normalization)
+
     def close(self):
         self.component_fitter.close()
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['sampler'] = None
+        return state
+
     def prior_transform(self, unit_cube):
-        """Transform a unit cube into the configured physical priors."""
         unit_cube = np.asarray(unit_cube, dtype=np.float64)
         physical = np.empty(self.ndim, dtype=np.float64)
         for index, entry in enumerate(self.component_fitter._entries):
@@ -105,16 +135,27 @@ class AdditiveSEDNestedFitter:
         return self.component_fitter._vector_to_values(
             physical_values, optimizer_space=False)
 
+    def chi_squared_components(self, values):
+        return self.component_fitter.chi_squared_components(values)
+
     def chi_squared_physical(self, values):
         return self.component_fitter.chi_squared_physical(values)
 
     def log_likelihood(self, physical_values):
         self.n_likelihood_calls += 1
-        chi2 = self.chi_squared_physical(
-            self._vector_to_values(physical_values))
+        try:
+            values = self._vector_to_values(physical_values)
+            chi2 = self.chi_squared_physical(values)
+        except Exception as exc:
+            if self.n_likelihood_calls <= 5:
+                print(f'[ERROR] additive correlated-flux likelihood failed: {exc}')
+            return LOG_LIKELIHOOD_FLOOR
         if not np.isfinite(chi2):
-            return -np.inf
-        return self._log_likelihood_normalization - 0.5 * chi2
+            return LOG_LIKELIHOOD_FLOOR
+        log_likelihood = self._log_likelihood_normalization - 0.5 * chi2
+        if not np.isfinite(log_likelihood):
+            return LOG_LIKELIHOOD_FLOOR
+        return max(float(log_likelihood), LOG_LIKELIHOOD_FLOOR)
 
     def _set_results(self, samples, weights, log_likelihood_values,
                      log_evidence, log_evidence_error, result=None):
@@ -126,14 +167,14 @@ class AdditiveSEDNestedFitter:
             log_likelihood_values, dtype=np.float64)
         self.log_evidence = float(log_evidence)
         self.log_evidence_error = float(log_evidence_error)
-
         best_index = int(np.nanargmax(self.log_likelihood_values))
         self.best_params = self._vector_to_values(self.samples[best_index])
-        self.best_chi2 = float(
-            -2.0 * (self.log_likelihood_values[best_index]
-                    - self._log_likelihood_normalization))
+        self.best_chi2_components = self.chi_squared_components(
+            self.best_params)
+        self.best_chi2 = self.best_chi2_components['fit_statistic']
         self.component_fitter.best_params = self.best_params
         self.component_fitter.best_chi2 = self.best_chi2
+        self.component_fitter.best_chi2_components = self.best_chi2_components
         self.posterior_summary = {}
         for index, name in enumerate(self.param_names):
             q16, median, q84 = _weighted_quantile(
@@ -142,7 +183,8 @@ class AdditiveSEDNestedFitter:
                 'median': float(median),
                 'minus_1sigma': float(median - q16),
                 'plus_1sigma': float(q84 - median),
-                'q16': float(q16), 'q84': float(q84),
+                'q16': float(q16),
+                'q84': float(q84),
             }
         self.equal_weight_samples = None
 
@@ -151,7 +193,6 @@ class AdditiveSEDNestedFitter:
             dynamic=True, sample='rslice', checkpoint_file=None,
             checkpoint_every=300, resume=False, walks=None, slices=None,
             n_effective=None, maxbatch=None):
-        """Run or resume dynesty nested sampling."""
         if method == 'classic':
             method = 'none'
         if method not in {'none', 'single', 'multi', 'balls', 'cubes'}:
@@ -175,15 +216,14 @@ class AdditiveSEDNestedFitter:
         return self.result
 
     def resume_backend_nested(self, checkpoint_file, **run_kwargs):
-        """Continue a dynesty checkpoint using this fitter's likelihood."""
         return self.run(
             checkpoint_file=checkpoint_file, resume=True, **run_kwargs)
 
     def plot_nested_diagnostics(
-            self, output_directory, prefix='multi_component_nested',
+            self, output_directory,
+            prefix='multi_component_correlated_flux_nested',
             max_corner_samples=50000, seed=8):
-        """Save trace, likelihood/weight, and corner diagnostics."""
-        from fitters_for_pyGrater.utils.nested_plotting import (
+        from pyGraterFit.utils.nested_plotting import (
             plot_nested_results)
         return plot_nested_results(
             self, output_directory, prefix=prefix,
@@ -255,11 +295,14 @@ class AdditiveSEDNestedFitter:
         if self.posterior_summary is None:
             print('No nested-sampling result yet.')
             return
-        degrees_of_freedom = max(len(self.obs) - self.ndim, 1)
+        dof = max(self.n_observations - self.ndim, 1)
         print(f'log(Z) = {self.log_evidence:.8g} '
               f'+/- {self.log_evidence_error:.3g}')
-        print(f'Best chi2 = {self.best_chi2:.8g}')
-        print(f'Reduced chi2 = {self.best_chi2 / degrees_of_freedom:.8g}')
+        print(f'Best fit statistic = {self.best_chi2:.8g}')
+        print(f'Reduced fit statistic = {self.best_chi2 / dof:.8g}')
+        print(f'  SED chi2 = {self.best_chi2_components["sed"]:.8g}')
+        print('  Correlated-flux chi2 = '
+              f'{self.best_chi2_components["correlated_flux"]:.8g}')
         print(f'Likelihood calls = {self.n_likelihood_calls}')
         if self.sampling_diagnostics is not None:
             print(
@@ -272,7 +315,7 @@ class AdditiveSEDNestedFitter:
                 'Effective posterior samples = '
                 f'{self.sampling_diagnostics["effective_sample_size"]:.4g}')
         print(f'\n{"Parameter":<32} {"median":>14} {"-1sigma":>14} '
-              f'{"+1sigma":>14} {"best chi2":>14}')
+              f'{"+1sigma":>14} {"best":>14}')
         print('-' * 92)
         best_vector = self.component_fitter._values_to_vector(self.best_params)
         for index, name in enumerate(self.param_names):
@@ -283,3 +326,9 @@ class AdditiveSEDNestedFitter:
                   f'{best_vector[index]:>14.6g}')
         if include_mass_abundances:
             print(self.format_component_mass_abundances(), end='')
+
+
+__all__ = [
+    'AdditiveSEDCorrelatedFluxNestedFitter',
+    'correlated_flux_from_vlti_loader',
+]

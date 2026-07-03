@@ -6,14 +6,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from pyGrater import CachedSED
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.utils.dynesty_backend import (
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.utils.dynesty_backend import (
     resample_equal, run_dynesty)
-from fitters_for_pyGrater.utils.parameter_handling import (
+from pyGraterFit.utils.parameter_handling import (
     resolve_parameters, split_parameter_specifications)
 
 
 LOG_SPACE_PARAMS = {'M_tot', 'a_min', 'r0', 'A_norm'}
+FINITE_CHI2_CEILING = 2.0e6
+MAX_SAFE_RESIDUAL = np.sqrt(FINITE_CHI2_CEILING)
+LOG_LIKELIHOOD_FLOOR = -1.0e6
 
 
 def _weighted_quantile(values, weights, quantiles):
@@ -120,8 +123,17 @@ class SEDNestedFitter:
         parameters = self._complete_parameters(free_parameters)
         model = self.sed_obj.get_SED(
             keep_separate_fluxes=False, **parameters)
+        if not np.all(np.isfinite(model)):
+            return FINITE_CHI2_CEILING
         residual = (self.obs - np.real(model)) * self._inverse_obs_err
-        return float(np.dot(residual, residual))
+        if not np.all(np.isfinite(residual)):
+            return FINITE_CHI2_CEILING
+        if np.max(np.abs(residual)) > MAX_SAFE_RESIDUAL:
+            return FINITE_CHI2_CEILING
+        chi2 = float(np.dot(residual, residual))
+        if not np.isfinite(chi2):
+            return FINITE_CHI2_CEILING
+        return min(chi2, FINITE_CHI2_CEILING)
 
     def log_likelihood(self, physical_values):
         self.n_likelihood_calls += 1
@@ -131,10 +143,13 @@ class SEDNestedFitter:
         except Exception as exc:
             if self.n_likelihood_calls <= 5:
                 print(f'[ERROR] nested likelihood evaluation failed: {exc}')
-            return -np.inf
+            return LOG_LIKELIHOOD_FLOOR
         if not np.isfinite(chi2):
-            return -np.inf
-        return self._log_likelihood_normalization - 0.5 * chi2
+            return LOG_LIKELIHOOD_FLOOR
+        log_likelihood = self._log_likelihood_normalization - 0.5 * chi2
+        if not np.isfinite(log_likelihood):
+            return LOG_LIKELIHOOD_FLOOR
+        return max(float(log_likelihood), LOG_LIKELIHOOD_FLOOR)
 
     def _set_results(self, samples, weights, log_likelihood_values,
                      log_evidence, log_evidence_error, result=None):
@@ -205,7 +220,7 @@ class SEDNestedFitter:
             self, output_directory, prefix='single_ring_nested',
             max_corner_samples=50000, seed=8):
         """Save trace, likelihood/weight, and corner diagnostics."""
-        from fitters_for_pyGrater.utils.nested_plotting import (
+        from pyGraterFit.utils.nested_plotting import (
             plot_nested_results)
         return plot_nested_results(
             self, output_directory, prefix=prefix,

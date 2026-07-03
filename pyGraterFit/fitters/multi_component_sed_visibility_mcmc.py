@@ -15,11 +15,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import differential_evolution, dual_annealing, minimize
 
-from fitters_for_pyGrater.fitters.multi_component_sed_mcmc import (
+from pyGraterFit.fitters.multi_component_sed_mcmc import (
     AdditiveSEDMCMCFitter,
 )
 from pyGrater import Image
-from fitters_for_pyGrater.utils.interferometry import (
+from pyGraterFit.utils.interferometry import (
     observables_from_image,
     uniform_disk_argument_per_mas,
     uniform_disk_visibility,

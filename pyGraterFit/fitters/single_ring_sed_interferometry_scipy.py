@@ -3,7 +3,7 @@
 The fitter uses ``SED`` for unresolved dust fluxes and ``Image`` for
 resolved disk images.  OIFITS squared visibilities and closure phases are
 calculated with the conventions documented in
-``fitters_for_pyGrater.utils.interferometry``.
+``pyGraterFit.utils.interferometry``.
 
 Parameters represented by a scalar are fixed. A two-element range marks a
 free parameter, and a callable defines a dependency, for example
@@ -18,14 +18,16 @@ from scipy.optimize import differential_evolution, dual_annealing, minimize
 
 from pyGrater import CachedSED
 from pyGrater import Image
-from fitters_for_pyGrater.utils.interferometry import (
+from pyGraterFit.utils.interferometry import (
     load_oifits_observations,
     observables_from_image,
     uniform_disk_argument_per_mas,
     uniform_disk_visibility_from_argument,
     wrap_phase_degrees,
 )
-from fitters_for_pyGrater.utils.parameter_handling import (
+from pyGraterFit.utils.mass import (
+    format_total_mass, single_component_total_mass)
+from pyGraterFit.utils.parameter_handling import (
     resolve_parameters, split_parameter_specifications)
 
 
@@ -427,6 +429,24 @@ class SEDInterferometryFitter:
             self.n_observations - self.n_dimensions, 1)
         return result
 
+    def get_total_mass(self, values=None):
+        """Return the surviving dust mass in Earth masses.
+
+        The mass is computed by the same pyGrater ``SED.get_total_mass``
+        routine used by SED-only fitters.  Interferometric-only parameters
+        such as stellar angular diameter are removed before the SED mass
+        calculation.
+        """
+        values = self.best_parameters if values is None else values
+        return single_component_total_mass(
+            self.sed_model, values,
+            lambda p: self._disk_parameters(self._complete_parameters(p)),
+            missing_message='Run fit() first or pass parameter values.')
+
+    def format_total_mass(self, values=None, label='Total dust mass'):
+        """Return a one-line mass summary for logs and output files."""
+        return format_total_mass(self.get_total_mass(values), label=label)
+
     def summary(self):
         """Print the best parameters and chi-squared contributions."""
         if self.best_parameters is None:
@@ -440,3 +460,4 @@ class SEDInterferometryFitter:
             print(f'  {name}: {value:.6g}')
         for name, value in self.best_parameters.items():
             print(f'  {name}: {value:.8g}')
+        print(self.format_total_mass())

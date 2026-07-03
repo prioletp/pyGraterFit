@@ -13,9 +13,11 @@ import matplotlib.pyplot as plt
 from scipy.optimize import differential_evolution, dual_annealing, minimize
 
 from pyGrater import CachedSED
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.utils.mcmc_backend import write_parameter_names
-from fitters_for_pyGrater.utils.parameter_handling import (
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.utils.mass import (
+    format_total_mass, single_component_total_mass)
+from pyGraterFit.utils.mcmc_backend import write_parameter_names
+from pyGraterFit.utils.parameter_handling import (
     resolve_parameters, split_parameter_specifications)
 
 
@@ -557,7 +559,31 @@ class SEDMCMCFitter:
         print('-' * 30)
         for k, v in self.best_params.items():
             print(f'{k:<15} {v:>14.6g}')
+        print(self.format_total_mass())
         print()
+
+    def get_total_mass(self, values=None, use_mcmc_best=False):
+        """Return the surviving dust mass in Earth masses.
+
+        By default this uses ``best_params`` from the SciPy initialization or
+        best available plotted point.  Set ``use_mcmc_best=True`` to use the
+        best posterior sample after ``run_mcmc``.
+        """
+        if values is None:
+            values = (
+                self.mcmc_best_params
+                if use_mcmc_best and self.mcmc_best_params is not None
+                else self.best_params)
+        return single_component_total_mass(
+            self.sed_obj, values, self._complete_parameters,
+            missing_message='Run fit/MCMC first or pass parameter values.')
+
+    def format_total_mass(self, values=None, label='Total dust mass',
+                          use_mcmc_best=False):
+        """Return a one-line mass summary for logs and output files."""
+        return format_total_mass(
+            self.get_total_mass(values, use_mcmc_best=use_mcmc_best),
+            label=label)
 
     def mcmc_summary(self):
         if self.mcmc_param_summary is None:
@@ -583,6 +609,8 @@ class SEDMCMCFitter:
         print('\nBest sampled point:')
         for k, v in self.mcmc_best_params.items():
             print(f'  {k:<15} {v:>14.6g}')
+        print(self.format_total_mass(
+            use_mcmc_best=True, label='Total dust mass at best sampled point'))
         print()
 
     def plot_best_fit(self, wavelengths_plot=None):

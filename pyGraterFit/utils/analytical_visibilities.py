@@ -21,7 +21,7 @@ flux before the observed correlated-flux amplitude is taken.
 import numpy as np
 from scipy.special import j0
 
-from fitters_for_pyGrater.utils.interferometry import ARCSECONDS_PER_RADIAN
+from pyGraterFit.utils.interferometry import ARCSECONDS_PER_RADIAN
 
 
 def au_to_radian(distance_au, distance_pc):

@@ -3,7 +3,7 @@
 import numpy as np
 
 from pyGrater.SED_fov import SEDFOV
-from fitters_for_pyGrater.fitters.multi_component_sed_mcmc import (
+from pyGraterFit.fitters.multi_component_sed_mcmc import (
     AdditiveSEDMCMCFitter,
 )
 
@@ -13,7 +13,8 @@ class FOVAdditiveSEDMCMCFitter(
     """Fit an instrument-transmitted SED from two multi-material rings.
 
     Physical parameters are shared by all materials within a ring. ``A_norm``
-    is always independent for every ring/material component. Scalars in
+    can be independent for every ring/material component or parameterized as a
+    total ring normalization plus composition fractions. Scalars in
     ``ring_params`` remain fixed, two-value sequences are fitted, and callables
     define dependencies such as ``h0=lambda p: 0.05 * p['r0']``. Fitting
     ranges are also used as uniform priors unless separate priors are supplied.
@@ -30,7 +31,9 @@ class FOVAdditiveSEDMCMCFitter(
             prior_ranges_by_component=None, shared_prior_ranges=None,
             best_fit_values=None, method='Nelder-Mead', use_log_params=True,
             N_distances=400, n_azimuth=64, parallel_components='auto',
-            max_component_workers=2, spatial_parameter_names=None):
+            max_component_workers=2, spatial_parameter_names=None,
+            normalization_mode='independent',
+            normalization_total_ranges=None):
         materials = dict(materials)
         ring_params = dict(ring_params)
         if not materials:
@@ -100,7 +103,10 @@ class FOVAdditiveSEDMCMCFitter(
             max_component_workers=max_component_workers,
             component_groups=component_groups,
             group_shared_parameter_names=first_ring_parameters,
-            sed_model_class=SEDFOV, sed_model_kwargs=sed_model_kwargs)
+            sed_model_class=SEDFOV, sed_model_kwargs=sed_model_kwargs,
+            normalization_mode=normalization_mode,
+            normalization_groups=component_groups,
+            normalization_total_ranges=normalization_total_ranges)
 
         # Grain composition changes the radiative transfer, not the projected
         # density. Share one bounded spatial cache between materials per ring.

@@ -2,11 +2,11 @@
 
 import numpy as np
 
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.fitters.single_ring_sed_interferometry_scipy import (
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.fitters.single_ring_sed_interferometry_scipy import (
     SEDInterferometryFitter,
 )
-from fitters_for_pyGrater.utils.mcmc_backend import write_parameter_names
+from pyGraterFit.utils.mcmc_backend import write_parameter_names
 
 
 class SEDInterferometryMCMCFitter(SEDInterferometryFitter):

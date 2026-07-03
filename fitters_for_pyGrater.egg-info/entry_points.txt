@@ -1,5 +1,0 @@
-[console_scripts]
-pygrater-plot-all-mcmc = fitters_for_pyGrater.utils.mcmc_batch_plotting:main
-pygrater-plot-mcmc = fitters_for_pyGrater.utils.mcmc_plotting:main
-pygrater-plot-nested = fitters_for_pyGrater.utils.nested_plotting:main
-pygrater-recover-backend = fitters_for_pyGrater.utils.emcee_backend_recovery:main

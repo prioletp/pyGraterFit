@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from fitters_for_pyGrater.utils.dynesty_backend import (
-    normalized_weights, resample_equal, run_dynesty)
-from fitters_for_pyGrater.utils.nested_plotting import (
+from pyGraterFit.utils.dynesty_backend import (
+    finite_log_likelihood, normalized_weights, resample_equal, run_dynesty)
+from pyGraterFit.utils.nested_plotting import (
     NestedResults, load_results, plot_nested_results)
 
 
@@ -38,6 +38,20 @@ def test_dynamic_dynesty_and_equal_weight_samples():
     equal = resample_equal(results.samples, weights, seed=2)
     assert equal.shape == results.samples.shape
     assert diagnostics["dynamic"]
+
+
+def test_dynesty_backend_never_passes_nonfinite_loglikelihood():
+    wrapped = finite_log_likelihood(lambda values: -np.inf)
+    assert np.isfinite(wrapped(np.zeros(2)))
+
+    _, results, weights, _ = run_dynesty(
+        lambda values: -np.inf, _prior_transform, 2,
+        npoints=30, dynamic=False, dlogz=5.0, maxcall=120,
+        progress=False)
+    assert np.all(np.isfinite(results.logl))
+    assert np.isfinite(results.logz[-1])
+    assert np.isfinite(results.logzerr[-1])
+    np.testing.assert_allclose(weights.sum(), 1.0)
 
 
 def test_nested_result_plot_bundle_and_reload(tmp_path):

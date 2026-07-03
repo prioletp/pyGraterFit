@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from fitters_for_pyGrater.utils.mcmc_plotting import (
+from pyGraterFit.utils.mcmc_plotting import (
     load_saved_mcmc,
     save_generic_plots,
 )

@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fitters_for_pyGrater"
+name = "pyGraterFit"
 version = "0.1.0"
 description = "Optimized SciPy, MCMC, nested-sampling, and interferometric fitters for pyGrater"
 readme = "README.md"
@@ -27,14 +27,14 @@ dependencies = [
 dev = ["pytest>=7", "jupyter", "nbconvert"]
 
 [project.scripts]
-pygrater-plot-mcmc = "fitters_for_pyGrater.utils.mcmc_plotting:main"
-pygrater-plot-all-mcmc = "fitters_for_pyGrater.utils.mcmc_batch_plotting:main"
-pygrater-plot-nested = "fitters_for_pyGrater.utils.nested_plotting:main"
-pygrater-recover-backend = "fitters_for_pyGrater.utils.emcee_backend_recovery:main"
+pyGraterFit-plot-mcmc = "pyGraterFit.utils.mcmc_plotting:main"
+pyGraterFit-plot-all-mcmc = "pyGraterFit.utils.mcmc_batch_plotting:main"
+pyGraterFit-plot-nested = "pyGraterFit.utils.nested_plotting:main"
+pyGraterFit-recover-backend = "pyGraterFit.utils.emcee_backend_recovery:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["fitters_for_pyGrater*"]
+include = ["pyGraterFit*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

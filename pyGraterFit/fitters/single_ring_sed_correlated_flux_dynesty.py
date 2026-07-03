@@ -6,18 +6,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from pyGrater import CachedSED
-from fitters_for_pyGrater.utils.dynesty_backend import (
+from pyGraterFit.utils.dynesty_backend import (
     resample_equal, run_dynesty)
-from fitters_for_pyGrater.utils.analytical_visibilities import (
+from pyGraterFit.utils.analytical_visibilities import (
     analytical_disk_visibility,
     correlated_flux_from_components,
 )
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.utils.parameter_handling import (
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.utils.parameter_handling import (
     resolve_parameters,
     split_parameter_specifications,
 )
-from fitters_for_pyGrater.utils.interferometry import (
+from pyGraterFit.utils.interferometry import (
     uniform_disk_argument_per_mas,
     uniform_disk_visibility_from_argument,
 )
@@ -32,6 +32,22 @@ ANALYTICAL_ONLY_PARAMETERS = {
 LOG_SPACE_PARAMETERS = {
     'M_tot', 'A_norm', 'a_min', 'r0', RING_FWHM_PARAMETER,
 }
+FINITE_CHI2_CEILING = 2.0e6
+MAX_SAFE_RESIDUAL = np.sqrt(FINITE_CHI2_CEILING)
+LOG_LIKELIHOOD_FLOOR = -1.0e6
+
+
+def _safe_chi_squared_from_residual(residual):
+    """Return a finite chi-squared for numerically extreme residual arrays."""
+    residual = np.asarray(residual, dtype=np.float64)
+    if not np.all(np.isfinite(residual)):
+        return FINITE_CHI2_CEILING
+    if residual.size and np.max(np.abs(residual)) > MAX_SAFE_RESIDUAL:
+        return FINITE_CHI2_CEILING
+    chi2 = float(np.dot(residual, residual))
+    if not np.isfinite(chi2):
+        return FINITE_CHI2_CEILING
+    return min(chi2, FINITE_CHI2_CEILING)
 
 
 def _one_dimensional_float_array(values, name):
@@ -404,6 +420,15 @@ class SEDCorrelatedFluxNestedFitter:
 
     def chi_squared_physical(self, free_parameters, return_models=False):
         models = self.model(free_parameters)
+        if not all(np.all(np.isfinite(value)) for value in models.values()):
+            components = {
+                'sed': FINITE_CHI2_CEILING if self.fit_sed else 0.0,
+                'correlated_flux': FINITE_CHI2_CEILING,
+                'fit_statistic': FINITE_CHI2_CEILING,
+            }
+            if return_models:
+                return components, models
+            return components
         correlated_residual = (
             (self.correlated_flux['value']
              - models['correlated_flux_jy'])
@@ -412,11 +437,11 @@ class SEDCorrelatedFluxNestedFitter:
             sed_residual = (
                 (self.observed_sed_jy - models['sed_jy'])
                 * self._inverse_sed_error)
-            chi2_sed = float(np.dot(sed_residual, sed_residual))
+            chi2_sed = _safe_chi_squared_from_residual(sed_residual)
         else:
             chi2_sed = 0.0
-        chi2_correlated_flux = float(np.dot(
-            correlated_residual, correlated_residual))
+        chi2_correlated_flux = _safe_chi_squared_from_residual(
+            correlated_residual)
         if not self.fit_sed:
             fit_statistic = chi2_correlated_flux
         elif self.normalize_each_dataset:
@@ -442,11 +467,14 @@ class SEDCorrelatedFluxNestedFitter:
         except Exception as exc:
             if self.n_likelihood_calls <= 5:
                 print(f'[ERROR] correlated-flux likelihood failed: {exc}')
-            return -np.inf
+            return LOG_LIKELIHOOD_FLOOR
         statistic = components['fit_statistic']
-        return (
-            self._log_likelihood_normalization - 0.5 * statistic
-            if np.isfinite(statistic) else -np.inf)
+        if not np.isfinite(statistic):
+            return LOG_LIKELIHOOD_FLOOR
+        log_likelihood = self._log_likelihood_normalization - 0.5 * statistic
+        if not np.isfinite(log_likelihood):
+            return LOG_LIKELIHOOD_FLOOR
+        return max(float(log_likelihood), LOG_LIKELIHOOD_FLOOR)
 
     def _set_results(self, samples, weights, log_likelihood_values,
                      log_evidence, log_evidence_error, result=None):
@@ -515,7 +543,7 @@ class SEDCorrelatedFluxNestedFitter:
             self, output_directory, prefix='correlated_flux_nested',
             max_corner_samples=50000, seed=8):
         """Save trace, likelihood/weight, and corner diagnostics."""
-        from fitters_for_pyGrater.utils.nested_plotting import (
+        from pyGraterFit.utils.nested_plotting import (
             plot_nested_results)
         return plot_nested_results(
             self, output_directory, prefix=prefix,

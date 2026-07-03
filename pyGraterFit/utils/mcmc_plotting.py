@@ -23,7 +23,7 @@ os.environ.setdefault(
 
 import matplotlib.pyplot as plt
 
-from fitters_for_pyGrater.utils.corner_plotting import (
+from pyGraterFit.utils.corner_plotting import (
     infer_log_space_parameters,
     make_corner_plot,
 )

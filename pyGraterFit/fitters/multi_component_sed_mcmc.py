@@ -7,12 +7,75 @@ import numpy as np
 from scipy.optimize import differential_evolution, dual_annealing, minimize
 
 from pyGrater import CachedSED, SharedSEDCache
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.utils.mcmc_backend import write_parameter_names
-from fitters_for_pyGrater.utils.parameter_handling import resolve_parameters
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.utils.mcmc_backend import write_parameter_names
+from pyGraterFit.utils.parameter_handling import resolve_parameters
 
 
 LOG_SPACE_PARAMS = {'M_tot', 'a_min', 'r0', 'A_norm'}
+# Finite numerical rejection ceiling used for models that overflow or produce
+# non-finite residuals.  This is intentionally much smaller than the largest
+# representable float: dynesty's evidence bookkeeping can become pathological
+# if rejected points are assigned log-likelihoods such as -1e99.
+FINITE_CHI2_CEILING = 2.0e6
+MAX_SAFE_RESIDUAL = np.sqrt(FINITE_CHI2_CEILING)
+
+
+def _components_from_ring_materials(
+        materials, ring_params, normalization_range=(1e25, 1e38),
+        normalization_total_ranges=None, mass_abundance_by_ring=True):
+    """Expand a friendly ``rings × materials`` specification.
+
+    This keeps the public constructor simple while preserving the lower-level
+    additive-component representation internally.  Each ring/material pair
+    remains a distinct SED component, so each material keeps its own grain
+    temperatures, sublimation behaviour, and density weighting.
+    """
+    materials = dict(materials)
+    ring_params = dict(ring_params)
+    if not materials:
+        raise ValueError('At least one material is required.')
+    if not ring_params:
+        raise ValueError('At least one ring is required.')
+
+    first_parameter_names = tuple(next(iter(ring_params.values())))
+    for ring_name, parameters in ring_params.items():
+        if tuple(parameters) != first_parameter_names:
+            raise ValueError(
+                f'{ring_name} parameter names/order differ from the '
+                'first ring.')
+        if 'A_norm' in parameters:
+            raise ValueError(
+                'Put A_norm in normalization_range, not ring_params.')
+
+    components = {}
+    params_by_component = {}
+    component_groups = {}
+    for ring_name, physical_parameters in ring_params.items():
+        for material_name, grain in materials.items():
+            component_name = f'{ring_name}.{material_name}'
+            components[component_name] = grain
+            params_by_component[component_name] = {
+                **physical_parameters,
+                'A_norm': normalization_range,
+            }
+            component_groups[component_name] = ring_name
+
+    if normalization_total_ranges is None:
+        normalization_total_ranges = {
+            ring_name: normalization_range for ring_name in ring_params}
+    mass_abundance_groups = (
+        component_groups if mass_abundance_by_ring else None)
+
+    return {
+        'components': components,
+        'params_by_component': params_by_component,
+        'component_groups': component_groups,
+        'group_shared_parameter_names': first_parameter_names,
+        'mass_abundance_groups': mass_abundance_groups,
+        'normalization_groups': component_groups,
+        'normalization_total_ranges': normalization_total_ranges,
+    }
 
 
 def _numba_threading_layer():
@@ -42,10 +105,10 @@ class AdditiveSEDMCMCFitter:
 
     _FWHM_TO_SIGMA = 1.0 / 2.3548200450309493
 
-    def __init__(self, components, star, density_distribution,
-                 size_distribution, scattering_phase_function, wavelengths,
-                 fluxes,
-                 fluxes_err, params_by_component,
+    def __init__(self, components=None, star=None, density_distribution=None,
+                 size_distribution=None, scattering_phase_function=None,
+                 wavelengths=None, fluxes=None, fluxes_err=None,
+                 params_by_component=None,
                  shared_parameter_names=(), prior_ranges_by_component=None,
                  shared_prior_ranges=None, best_fit_values=None,
                  method='Nelder-Mead', use_log_params=True,
@@ -53,7 +116,42 @@ class AdditiveSEDMCMCFitter:
                  max_component_workers=2, component_groups=None,
                  group_shared_parameter_names=(),
                  sed_model_class=CachedSED, sed_model_kwargs=None,
-                 mass_abundance_groups=None, share_spatial_grid=True):
+                 mass_abundance_groups=None, share_spatial_grid=True,
+                 normalization_mode='independent',
+                 normalization_groups=None,
+                 normalization_total_ranges=None,
+                 materials=None, ring_params=None,
+                 normalization_range=(1e25, 1e38),
+                 mass_abundance_by_ring=True):
+        if components is None:
+            if materials is None or ring_params is None:
+                raise ValueError(
+                    'Provide either components/params_by_component or '
+                    'materials/ring_params.')
+            expanded = _components_from_ring_materials(
+                materials, ring_params,
+                normalization_range=normalization_range,
+                normalization_total_ranges=normalization_total_ranges,
+                mass_abundance_by_ring=mass_abundance_by_ring)
+            components = expanded['components']
+            params_by_component = expanded['params_by_component']
+            if component_groups is None:
+                component_groups = expanded['component_groups']
+            if not group_shared_parameter_names:
+                group_shared_parameter_names = expanded[
+                    'group_shared_parameter_names']
+            if mass_abundance_groups is None:
+                mass_abundance_groups = expanded['mass_abundance_groups']
+            if normalization_groups is None:
+                normalization_groups = expanded['normalization_groups']
+            if normalization_total_ranges is None:
+                normalization_total_ranges = expanded[
+                    'normalization_total_ranges']
+            if normalization_mode == 'independent':
+                normalization_mode = 'group_total_fraction'
+        if params_by_component is None:
+            raise ValueError(
+                'params_by_component is required when components are given.')
         self.components = dict(components)
         if not self.components:
             raise ValueError('At least one SED component is required.')
@@ -120,6 +218,29 @@ class AdditiveSEDMCMCFitter:
             group: [name for name in self.component_names
                     if self.component_groups[name] == group]
             for group in self.group_names}
+        self.normalization_mode = normalization_mode
+        if self.normalization_mode not in {
+                'independent', 'group_total_fraction'}:
+            raise ValueError(
+                "normalization_mode must be 'independent' or "
+                "'group_total_fraction'.")
+        if normalization_groups is None:
+            normalization_groups = (
+                self.component_groups
+                if self.normalization_mode == 'group_total_fraction'
+                else {name: name for name in self.component_names})
+        if set(normalization_groups) != set(self.component_names):
+            raise ValueError('normalization_groups labels must match components.')
+        self.normalization_groups = dict(normalization_groups)
+        self.normalization_group_names = list(
+            dict.fromkeys(self.normalization_groups.values()))
+        self.components_by_normalization_group = {
+            group: [name for name in self.component_names
+                    if self.normalization_groups[name] == group]
+            for group in self.normalization_group_names}
+        self.normalization_total_ranges = (
+            {} if normalization_total_ranges is None
+            else dict(normalization_total_ranges))
         if self.shared_sed_cache is not None:
             self.shared_sed_cache.max_entries = max(
                 2, 2 * len(self.group_names))
@@ -138,6 +259,7 @@ class AdditiveSEDMCMCFitter:
             {} if shared_prior_ranges is None else dict(shared_prior_ranges))
 
         self._entries = []
+        self._normalization_group_specs = {}
         self.fixed_params_by_component = {name: {} for name in self.component_names}
         self.dependent_params_by_component = {
             name: {} for name in self.component_names}
@@ -210,6 +332,7 @@ class AdditiveSEDMCMCFitter:
             for parameter in self.dependent_params_by_component[name]]
         print(f'Dependent parameters: {dependent_labels}')
         print(f'Log-space parameters: {self.log_params}')
+        print(f'Normalization mode: {self.normalization_mode}')
         print(f'Parallel component evaluations: {self.parallel_components} '
               f'({self.max_component_workers} workers)')
         if self.numba_threading_layer is not None:
@@ -219,6 +342,21 @@ class AdditiveSEDMCMCFitter:
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # ThreadPoolExecutor owns thread locks that cannot be pickled by
+        # dynesty checkpoints. It is a runtime acceleration only; restored
+        # samplers can recreate it or safely evaluate components serially.
+        state['_executor'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._executor = None
+        if getattr(self, 'parallel_components', False):
+            self._executor = ThreadPoolExecutor(
+                max_workers=getattr(self, 'max_component_workers', 1))
 
     def __del__(self):
         executor = getattr(self, '_executor', None)
@@ -307,7 +445,7 @@ class AdditiveSEDMCMCFitter:
         return self._clean_range(value, f'prior for {component}.{parameter}')
 
     def _add_entry(self, label, parameter, component, fit_range, shared,
-                   targets=None):
+                   targets=None, role=None, group=None):
         lo, hi = self._clean_range(fit_range, label)
         is_log = self.use_log_params and parameter in LOG_SPACE_PARAMS
         if is_log and lo <= 0:
@@ -321,9 +459,117 @@ class AdditiveSEDMCMCFitter:
             'label': label, 'parameter': parameter, 'component': component,
             'shared': shared, 'log': is_log, 'fit_bounds': fit_bounds,
             'prior': prior,
-            'targets': tuple(targets if targets is not None else [component])})
+            'targets': tuple(targets if targets is not None else [component]),
+            'role': role,
+            'group': group})
+
+    def _uses_group_total_normalization(self, component_name):
+        if self.normalization_mode != 'group_total_fraction':
+            return False
+        group = self.normalization_groups[component_name]
+        return len(self.components_by_normalization_group[group]) > 1
+
+    def _add_group_total_normalization_entries(self):
+        if self.normalization_mode != 'group_total_fraction':
+            return
+        for group, names in self.components_by_normalization_group.items():
+            if len(names) <= 1:
+                continue
+            ranges = []
+            for name in names:
+                if 'A_norm' not in self.params_by_component[name]:
+                    raise ValueError(
+                        f'{name} is missing A_norm for grouped normalization.')
+                value = self.params_by_component[name]['A_norm']
+                if not self._is_range(value):
+                    raise ValueError(
+                        f'{name}.A_norm must be a range for grouped '
+                        'normalization.')
+                ranges.append(self._clean_range(value, f'{name}.A_norm'))
+            if group in self.normalization_total_ranges:
+                total_range = self._clean_range(
+                    self.normalization_total_ranges[group],
+                    f'{group}.A_norm_total')
+            else:
+                reference = ranges[0]
+                if any(rng != reference for rng in ranges[1:]):
+                    raise ValueError(
+                        f'Normalization group {group} has different component '
+                        'A_norm ranges. Provide normalization_total_ranges.')
+                total_range = reference
+            self._normalization_group_specs[group] = {
+                'components': tuple(names),
+                'total_range': total_range,
+            }
+            self._add_entry(
+                f'{group}.A_norm_total', 'A_norm', names[0], total_range,
+                False, targets=(), role='normalization_total', group=group)
+            for name in names[:-1]:
+                self._add_entry(
+                    f'{name}.fraction_stick', 'fraction_stick', name,
+                    (0.0, 1.0), False, targets=(),
+                    role='normalization_fraction_stick', group=group)
+
+    @staticmethod
+    def _fractions_from_sticks(sticks):
+        sticks = np.clip(np.asarray(sticks, dtype=np.float64), 0.0, 1.0)
+        n_components = len(sticks) + 1
+        fractions = []
+        remaining = 1.0
+        for index, unit_value in enumerate(sticks):
+            beta_power = n_components - index - 1
+            break_fraction = 1.0 - (1.0 - unit_value) ** (
+                1.0 / beta_power)
+            fraction = remaining * break_fraction
+            fractions.append(fraction)
+            remaining -= fraction
+        fractions.append(remaining)
+        return np.asarray(fractions, dtype=np.float64)
+
+    @staticmethod
+    def _sticks_from_fractions(fractions):
+        fractions = np.asarray(fractions, dtype=np.float64)
+        if np.any(fractions < 0) or not np.isclose(fractions.sum(), 1.0):
+            raise ValueError('Grouped A_norm fractions must be positive and sum to 1.')
+        sticks = []
+        remaining = 1.0
+        n_components = len(fractions)
+        for index, fraction in enumerate(fractions[:-1]):
+            if remaining <= 0:
+                sticks.append(0.0)
+                continue
+            break_fraction = np.clip(fraction / remaining, 0.0, 1.0)
+            beta_power = n_components - index - 1
+            sticks.append(1.0 - (1.0 - break_fraction) ** beta_power)
+            remaining -= fraction
+        return np.asarray(sticks, dtype=np.float64)
+
+    def _apply_group_total_normalizations(self, values, vector_values):
+        if self.normalization_mode != 'group_total_fraction':
+            return
+        by_group = {}
+        for entry, value in zip(self._entries, vector_values):
+            role = entry.get('role')
+            if role is None:
+                continue
+            by_group.setdefault(entry['group'], {}).setdefault(role, []).append(
+                float(value))
+        for group, spec in self._normalization_group_specs.items():
+            total_values = by_group.get(group, {}).get(
+                'normalization_total', [])
+            if len(total_values) != 1:
+                raise ValueError(f'Missing {group}.A_norm_total.')
+            sticks = by_group.get(group, {}).get(
+                'normalization_fraction_stick', [])
+            names = spec['components']
+            if len(sticks) != len(names) - 1:
+                raise ValueError(f'Missing composition fractions for {group}.')
+            fractions = self._fractions_from_sticks(sticks)
+            for name, fraction in zip(names, fractions):
+                values[name]['A_norm'] = total_values[0] * fraction
 
     def _build_parameter_entries(self):
+        self._add_group_total_normalization_entries()
         first_name = self.component_names[0]
         first = self.params_by_component[first_name]
         for parameter in self.shared_parameter_names:
@@ -363,6 +609,9 @@ class AdditiveSEDMCMCFitter:
 
         for name in self.component_names:
             for parameter, value in self.params_by_component[name].items():
+                if (parameter == 'A_norm'
+                        and self._uses_group_total_normalization(name)):
+                    continue
                 if parameter in shared or parameter in group_shared:
                     continue
                 if callable(value):
@@ -383,18 +632,42 @@ class AdditiveSEDMCMCFitter:
 
     def _vector_to_values(self, vector, optimizer_space=False):
         values = self._empty_values()
+        physical_vector = []
         for i, entry in enumerate(self._entries):
             value = float(vector[i])
             if optimizer_space and entry['log']:
                 value = 10**value
+            physical_vector.append(value)
+            if entry.get('role') is not None:
+                continue
             for name in entry['targets']:
                 values[name][entry['parameter']] = value
+        self._apply_group_total_normalizations(values, physical_vector)
         return values
 
     def _values_to_vector(self, values, optimizer_space=False):
         values = self._validate_best_fit(values)
         vector = []
         for entry in self._entries:
+            role = entry.get('role')
+            if role == 'normalization_total':
+                component_names = self._normalization_group_specs[
+                    entry['group']]['components']
+                value = sum(values[name]['A_norm'] for name in component_names)
+                vector.append(
+                    np.log10(value) if optimizer_space and entry['log']
+                    else value)
+                continue
+            if role == 'normalization_fraction_stick':
+                component_names = self._normalization_group_specs[
+                    entry['group']]['components']
+                total = sum(values[name]['A_norm'] for name in component_names)
+                fractions = [values[name]['A_norm'] / total
+                             for name in component_names]
+                sticks = self._sticks_from_fractions(fractions)
+                stick_index = component_names.index(entry['component'])
+                vector.append(float(sticks[stick_index]))
+                continue
             name = self.component_names[0] if entry['shared'] else entry['component']
             value = values[name][entry['parameter']]
             vector.append(np.log10(value) if optimizer_space and entry['log'] else value)
@@ -406,6 +679,8 @@ class AdditiveSEDMCMCFitter:
                 f'best_fit_values needs component keys {self.component_names}.')
         clean = {name: {} for name in self.component_names}
         for entry in self._entries:
+            if entry.get('role') is not None:
+                continue
             targets = entry['targets']
             found = []
             for name in targets:
@@ -418,6 +693,11 @@ class AdditiveSEDMCMCFitter:
                     'between components.')
             for name, value in zip(targets, found):
                 clean[name][entry['parameter']] = value
+        for spec in self._normalization_group_specs.values():
+            for name in spec['components']:
+                if 'A_norm' not in values[name]:
+                    raise ValueError(f'Missing best fit {name}.A_norm.')
+                clean[name]['A_norm'] = float(values[name]['A_norm'])
         return clean
 
     def _full_component_params(self, values, name):
@@ -457,11 +737,21 @@ class AdditiveSEDMCMCFitter:
 
     def chi_squared_physical(self, values):
         try:
-            residual = (self.obs - self.model(values)) * self._inv_obs_err
-            return float(np.dot(residual, residual))
+            model = self.model(values)
+            if not np.all(np.isfinite(model)):
+                return FINITE_CHI2_CEILING
+            residual = (self.obs - model) * self._inv_obs_err
+            if not np.all(np.isfinite(residual)):
+                return FINITE_CHI2_CEILING
+            if np.max(np.abs(residual)) > MAX_SAFE_RESIDUAL:
+                return FINITE_CHI2_CEILING
+            chi2 = float(np.dot(residual, residual))
+            if not np.isfinite(chi2):
+                return FINITE_CHI2_CEILING
+            return min(chi2, FINITE_CHI2_CEILING)
         except Exception as exc:
             print(f'[ERROR] additive SED evaluation failed: {exc}')
-            return np.inf
+            return FINITE_CHI2_CEILING
 
     def chi_squared(self, vector):
         vector = np.clip(vector, self._bounds_lo, self._bounds_hi)

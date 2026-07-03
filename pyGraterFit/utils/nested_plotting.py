@@ -8,8 +8,8 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-from fitters_for_pyGrater.utils.corner_plotting import make_corner_plot
-from fitters_for_pyGrater.utils.dynesty_backend import normalized_weights
+from pyGraterFit.utils.corner_plotting import make_corner_plot
+from pyGraterFit.utils.dynesty_backend import normalized_weights
 
 
 @dataclass
@@ -26,7 +26,7 @@ class NestedResults:
 
 
 def from_fitter(fitter):
-    """Build a plotting view from any fitters_for_pyGrater nested fitter."""
+    """Build a plotting view from any pyGraterFit nested fitter."""
     if fitter.samples is None:
         raise RuntimeError("Run or load nested-sampling results first.")
     return NestedResults(
@@ -172,7 +172,7 @@ def plot_nested_results(results, output_directory, prefix="nested",
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Plot fitters_for_pyGrater nested-sampling results.")
+        description="Plot pyGraterFit nested-sampling results.")
     parser.add_argument("results", help="Portable nested-results NPZ file")
     parser.add_argument("-o", "--output-directory", default="nested_plots")
     parser.add_argument("--prefix", default="nested")
