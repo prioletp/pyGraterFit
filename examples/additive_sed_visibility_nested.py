@@ -1,9 +1,7 @@
-"""Complete multi-ring, multi-composition image-V2 MCMC example.
+"""Complete multi-ring, multi-composition image-V2 nested-sampling example.
 
-Set FIT_SED_TOO = True to fit the SED and squared visibilities together.
-Set FIT_SED_TOO = False to fit only the squared visibilities.  The SED model
-is still available internally for the dust/star flux ratio, but the SED chi2
-term is omitted from the objective.
+This uses SEDVisibilityNestedFitter.  Set FIT_SED_TOO = False for a
+visibility-only fit, or True to add the SED term to the same fit.
 """
 
 from pathlib import Path
@@ -14,20 +12,20 @@ from pyGrater import Grain, Star
 from pyGrater.density import two_power_law
 from pyGrater.phase_functions import HenveyGreenstein
 from pyGrater.size_distributions import power_law_distribution
+from pyGraterFit.fitters.multi_component_sed_visibility_dynesty import (
+    SEDVisibilityNestedFitter,
+)
 from pyGraterFit.fitters.multi_component_sed_visibility_mcmc import (
-    SEDVisibilityMCMCFitter,
     vis2_from_vlti_loader,
 )
 
 
 FIT_SED_TOO = False
-RUN_SCIPY_FIRST = False
-RUN_MCMC = False
-RESUME_HDF_BACKEND = False
+RUN_MODE = "build_only"  # "build_only", "fresh", "resume", or "load"
 
-OUTPUT_PREFIX = "additive_sed_visibility_mcmc"
-BACKEND = Path(f"{OUTPUT_PREFIX}_backend.h5")
-CHAIN_NPZ = Path(f"{OUTPUT_PREFIX}_chain.npz")
+OUTPUT_PREFIX = "additive_sed_visibility_nested"
+CHECKPOINT = Path(f"{OUTPUT_PREFIX}_checkpoint.pkl")
+RESULTS_NPZ = Path(f"{OUTPUT_PREFIX}_results.npz")
 
 
 def scale_height(parameters):
@@ -54,9 +52,7 @@ vis2_data = {
     "wavelength_m": np.array([8.35e-6, 10.6e-6, 12.8e-6], dtype=float),
 }
 
-# These are the image wavelengths that will actually be rendered.  They do not
-# need to exactly match the observed wavelengths.  Each observed V2 point is
-# evaluated on the nearest image wavelength.
+# The observed wavelengths are assigned to the nearest rendered image plane.
 image_wavelengths = np.array([8.0, 10.0, 13.0], dtype=float)
 
 common = {
@@ -87,7 +83,7 @@ if FIT_SED_TOO:
         "sed_flux_errors": sed_flux_errors,
     }
 
-fitter = SEDVisibilityMCMCFitter(
+fitter = SEDVisibilityNestedFitter(
     materials=materials,
     ring_params=ring_params,
     star=star,
@@ -100,37 +96,39 @@ fitter = SEDVisibilityMCMCFitter(
     normalization_range=(1e25, 1e38),
     stellar_visibility_model="uniform_disk",
     stellar_angular_diameter_mas=0.7,
-    method="Nelder-Mead",
     use_log_params=True,
     N_distances=300,
     **sed_arguments,
 )
 
-if RUN_SCIPY_FIRST:
-    fitter.fit(maxiter=300, verbose=True)
-    fitter.summary()
-    fitter.plot_best_fit().savefig(f"{OUTPUT_PREFIX}_best_fit.png", dpi=150)
-
-if RUN_MCMC:
-    fitter.run_mcmc(
-        nwalkers=max(32, 2 * fitter.ndim + 2),
-        nsteps=2000,
-        burn_in=500,
-        thin=1,
-        init="best_fit" if RUN_SCIPY_FIRST else "prior",
-        backend_path=BACKEND,
-        reset_backend=True,
-        save_path=CHAIN_NPZ,
+if RUN_MODE == "fresh":
+    fitter.run(
+        npoints=400,
+        dlogz=0.1,
+        dynamic=True,
+        checkpoint_file=CHECKPOINT,
+        checkpoint_every=300,
         progress=True,
     )
-    fitter.mcmc_summary()
-    fitter.mcmc_walkers_plot(max_walkers=40).savefig(
-        f"{OUTPUT_PREFIX}_walkers.png", dpi=150)
-    fitter.mcmc_corner_plot(max_samples=5000).savefig(
+    fitter.save_results(RESULTS_NPZ)
+    fitter.summary()
+    fitter.corner_plot(max_samples=5000).savefig(
         f"{OUTPUT_PREFIX}_corner.png", dpi=150)
     fitter.plot_best_fit().savefig(f"{OUTPUT_PREFIX}_best_fit.png", dpi=150)
 
-if RESUME_HDF_BACKEND:
-    fitter.resume_backend_mcmc(
-        BACKEND, nsteps=1000, burn_in=500, thin=1, progress=True)
-    fitter.save_chain(CHAIN_NPZ)
+if RUN_MODE == "resume":
+    fitter.resume_backend_nested(
+        CHECKPOINT,
+        npoints=400,
+        dlogz=0.1,
+        dynamic=True,
+        progress=True,
+    )
+    fitter.save_results(RESULTS_NPZ)
+
+if RUN_MODE == "load":
+    fitter.load_results(RESULTS_NPZ)
+    fitter.summary()
+    fitter.corner_plot(max_samples=5000).savefig(
+        f"{OUTPUT_PREFIX}_corner.png", dpi=150)
+    fitter.plot_best_fit().savefig(f"{OUTPUT_PREFIX}_best_fit.png", dpi=150)

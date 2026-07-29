@@ -45,7 +45,9 @@ The main package README explains all developer options in more detail,
 including `SAMPLE`, `METHOD`, grouped composition fractions, caching,
 parallelization, checkpointing, and likelihood/evidence handling.
 
-- `additive_sed_visibility_mcmc.py`: template for fitting an SED plus image-based squared visibilities with the same `materials=...` and `ring_params=...` interface.
+- `additive_sed_visibility_mcmc.py`: template for fitting image-based squared visibilities, optionally together with an SED, using the same `materials=...` and `ring_params=...` interface. Observed V2 wavelengths are associated with the nearest rendered image wavelength.
+
+- `additive_sed_visibility_nested.py`: nested-sampling counterpart for image-based squared visibilities, with the same SED-optional workflow and checkpoint/resume/load sections.
 
 - `additive_sed_correlated_flux_mcmc.py`: complete MCMC template for correlated fluxes alone or correlated fluxes plus an SED.
 

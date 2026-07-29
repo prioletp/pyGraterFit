@@ -2,11 +2,15 @@
 
 Each component is one ring/composition pair.  Ring parameters can be shared
 between compositions with ``component_groups`` while every composition keeps
-its own ``A_norm``.  The objective gives equal weight to the SED and V2 data:
+its own ``A_norm``.  SED data are optional.  When SED data are provided,
+the objective is:
 
     chi2_fit = chi2_sed / N_sed + chi2_vis2 / N_vis2
 
-Closure phases are deliberately not evaluated by this fitter.
+When SED data are omitted, the objective is simply ``chi2_vis2 / N_vis2``.
+Closure phases are deliberately not evaluated by this fitter.  Every V2
+point is associated with the nearest requested image wavelength; no
+wavelength-mismatch rejection is applied.
 """
 
 import time
@@ -137,7 +141,7 @@ class SEDVisibilityMCMCFitter(
             parallel_components='auto', max_component_workers=2,
             component_groups=None, group_shared_parameter_names=(),
             image_wavelengths=None, image_settings=None,
-            include_unresolved_star=True, maximum_wavelength_mismatch=0.0,
+            include_unresolved_star=True, maximum_wavelength_mismatch=None,
             fft_padding_factor=4, sed_model_kwargs=None,
             mass_abundance_groups=None, share_spatial_grid=True,
             normalization_mode='independent', normalization_groups=None,
@@ -202,10 +206,38 @@ class SEDVisibilityMCMCFitter(
             and (callable(stellar_angular_diameter_mas)
                  or isinstance(stellar_angular_diameter_mas,
                                (tuple, list, np.ndarray))))
+
+        self.vis2 = _validate_vis2(vis2)
+        self._inv_vis2_error = 1.0 / self.vis2['error']
+        self.fit_sed = sed_wavelengths is not None
+        if self.fit_sed:
+            if sed_fluxes is None or sed_flux_errors is None:
+                raise ValueError(
+                    'sed_fluxes and sed_flux_errors are required when '
+                    'sed_wavelengths is provided.')
+            base_wavelengths = np.asarray(sed_wavelengths, dtype=np.float64)
+            base_fluxes = np.asarray(sed_fluxes, dtype=np.float64)
+            base_errors = np.asarray(sed_flux_errors, dtype=np.float64)
+        else:
+            if sed_fluxes is not None or sed_flux_errors is not None:
+                raise ValueError(
+                    'Provide all SED arrays, or omit sed_wavelengths, '
+                    'sed_fluxes, and sed_flux_errors for a V2-only fit.')
+            if image_wavelengths is None:
+                base_wavelengths = np.unique(self.vis2['wavelength_m']) * 1e6
+            else:
+                base_wavelengths = np.asarray(
+                    image_wavelengths, dtype=np.float64).ravel()
+            if base_wavelengths.size == 0:
+                raise ValueError(
+                    'V2-only fits need image_wavelengths or V2 wavelengths.')
+            base_fluxes = np.zeros(base_wavelengths.shape, dtype=np.float64)
+            base_errors = np.ones(base_wavelengths.shape, dtype=np.float64)
+
         super().__init__(
             components, star, density_distribution, size_distribution,
-            scattering_phase_function, sed_wavelengths, sed_fluxes,
-            sed_flux_errors, params_by_component,
+            scattering_phase_function, base_wavelengths, base_fluxes,
+            base_errors, params_by_component,
             shared_parameter_names=shared_parameter_names,
             prior_ranges_by_component=prior_ranges_by_component,
             shared_prior_ranges=shared_prior_ranges,
@@ -222,9 +254,7 @@ class SEDVisibilityMCMCFitter(
             normalization_groups=normalization_groups,
             normalization_total_ranges=normalization_total_ranges)
 
-        self.vis2 = _validate_vis2(vis2)
-        self._inv_vis2_error = 1.0 / self.vis2['error']
-        self.n_sed_points = self.obs.size
+        self.n_sed_points = int(self.obs.size if self.fit_sed else 0)
         self.n_vis2_points = self.vis2['value'].size
         self.image_settings = dict(image_settings or {})
         self.include_unresolved_star = bool(include_unresolved_star)
@@ -275,7 +305,11 @@ class SEDVisibilityMCMCFitter(
         print(f'V2 points: {self.n_vis2_points}')
         print(f'Monochromatic image planes: '
               f'{self.image_wavelengths_micron.size}')
-        print('Objective: chi2_SED/N_SED + chi2_V2/N_V2')
+        print('V2 wavelength assignment: nearest image wavelength')
+        objective = (
+            'chi2_SED/N_SED + chi2_V2/N_V2'
+            if self.fit_sed else 'chi2_V2/N_V2')
+        print(f'Objective: {objective}')
         print(f'Stellar visibility model: {self.stellar_visibility_model}')
 
     def _full_component_params(self, values, name):
@@ -293,21 +327,22 @@ class SEDVisibilityMCMCFitter(
             raise ValueError('Stellar angular diameter must be non-negative.')
         return float(diameter)
 
-    def _assign_vis2_to_images(self, maximum_relative_mismatch):
+    def _assign_vis2_to_images(self, maximum_relative_mismatch=None):
+        """Associate every V2 point with the nearest image wavelength.
+
+        ``maximum_relative_mismatch`` is ignored and kept only so older scripts
+        that pass the keyword continue to run. The selected image grid is a
+        modelling choice; observations always use their own wavelengths in the
+        Fourier conversion.
+        """
+        del maximum_relative_mismatch
         model_wavelengths_m = self.image_wavelengths_micron * 1e-6
         observed = self.vis2['wavelength_m']
         nearest = np.argmin(
             np.abs(observed[:, None] - model_wavelengths_m[None, :]), axis=1)
-        mismatch = np.abs(observed - model_wavelengths_m[nearest]) / observed
-        tolerance = float(maximum_relative_mismatch)
-        numerical_tolerance = 32 * np.finfo(np.float64).eps
-        if np.any(mismatch > max(tolerance, numerical_tolerance)):
-            worst = int(np.argmax(mismatch))
-            raise ValueError(
-                'No image wavelength is sufficiently close to V2 wavelength '
-                f'{observed[worst] * 1e6:.8g} micron (relative mismatch '
-                f'{mismatch[worst]:.3g}).')
         self._vis2_image_index = nearest
+        self._vis2_wavelength_mismatch = (
+            np.abs(observed - model_wavelengths_m[nearest]) / observed)
         self._vis2_indices_by_image = [
             np.flatnonzero(nearest == image_index)
             for image_index in range(model_wavelengths_m.size)]
@@ -377,11 +412,18 @@ class SEDVisibilityMCMCFitter(
 
     def evaluate_physical_parameters(self, values, return_models=False):
         start = time.perf_counter()
-        sed_start = start
-        model_sed = self.model(values)
-        sed_elapsed = time.perf_counter() - sed_start
-        sed_residual = (self.obs - model_sed) * self._inv_obs_err
-        sed_chi2 = float(np.dot(sed_residual, sed_residual))
+        if self.fit_sed:
+            sed_start = start
+            model_sed = self.model(values)
+            sed_elapsed = time.perf_counter() - sed_start
+            sed_residual = (self.obs - model_sed) * self._inv_obs_err
+            sed_chi2 = float(np.dot(sed_residual, sed_residual))
+            sed_chi2_per_point = sed_chi2 / self.n_sed_points
+        else:
+            model_sed = None
+            sed_elapsed = 0.0
+            sed_chi2 = 0.0
+            sed_chi2_per_point = 0.0
 
         image_start = time.perf_counter()
         model_images = self.model_images(values)
@@ -395,13 +437,13 @@ class SEDVisibilityMCMCFitter(
 
         components = {
             'sed_chi2': sed_chi2,
-            'sed_chi2_per_point': sed_chi2 / self.n_sed_points,
+            'sed_chi2_per_point': sed_chi2_per_point,
             'vis2_chi2': vis2_chi2,
             'vis2_chi2_per_point': vis2_chi2 / self.n_vis2_points,
         }
-        objective = (
-            components['sed_chi2_per_point']
-            + components['vis2_chi2_per_point'])
+        objective = components['vis2_chi2_per_point']
+        if self.fit_sed:
+            objective += components['sed_chi2_per_point']
         self.last_chi2_components = components
         self.timings['sed'] += sed_elapsed
         self.timings['images'] += image_elapsed
@@ -456,9 +498,12 @@ class SEDVisibilityMCMCFitter(
     @staticmethod
     def _print_chi2_breakdown(breakdown):
         print(f'Joint objective = {breakdown["objective"]:.8g}')
-        print(f'  SED: chi2={breakdown["sed_chi2"]:.8g}, '
-              f'N={breakdown["n_sed"]}, '
-              f'chi2/N={breakdown["sed_chi2_per_point"]:.8g}')
+        if breakdown["n_sed"] > 0:
+            print(f'  SED: chi2={breakdown["sed_chi2"]:.8g}, '
+                  f'N={breakdown["n_sed"]}, '
+                  f'chi2/N={breakdown["sed_chi2_per_point"]:.8g}')
+        else:
+            print('  SED: not fitted')
         print(f'  V2:  chi2={breakdown["vis2_chi2"]:.8g}, '
               f'N={breakdown["n_vis2"]}, '
               f'chi2/N={breakdown["vis2_chi2_per_point"]:.8g}')
@@ -500,31 +545,40 @@ class SEDVisibilityMCMCFitter(
             raise RuntimeError('Run a fit or restore an MCMC chain first.')
         _, breakdown, models = self.evaluate_physical_parameters(
             self.best_params, return_models=True)
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-        axes[0].errorbar(
-            self.wavelengths, self.obs, yerr=self.obs_err, fmt='o', ms=4,
-            color='black', label='SED data')
-        axes[0].plot(self.wavelengths, models['sed_jy'], color='tab:red',
-                     lw=1.7, label='Best model')
-        axes[0].set(xscale='log', yscale='log', xlabel='Wavelength [micron]',
-                    ylabel='Dust flux density [Jy]')
-        axes[0].legend()
-        axes[0].grid(True, which='both', alpha=0.25)
+        ncols = 2 if self.fit_sed else 1
+        fig, axes = plt.subplots(1, ncols, figsize=(13 if self.fit_sed else 7, 5))
+        if self.fit_sed:
+            sed_axis, vis_axis = axes
+            sed_axis.errorbar(
+                self.wavelengths, self.obs, yerr=self.obs_err, fmt='o', ms=4,
+                color='black', label='SED data')
+            sed_axis.plot(self.wavelengths, models['sed_jy'], color='tab:red',
+                          lw=1.7, label='Best model')
+            sed_axis.set(
+                xscale='log', yscale='log', xlabel='Wavelength [micron]',
+                ylabel='Dust flux density [Jy]')
+            sed_axis.legend()
+            sed_axis.grid(True, which='both', alpha=0.25)
+        else:
+            vis_axis = axes
 
         baseline = np.hypot(self.vis2['u_m'], self.vis2['v_m'])
         spatial_frequency = baseline / self.vis2['wavelength_m'] / 1e6
-        axes[1].errorbar(
+        vis_axis.errorbar(
             spatial_frequency, self.vis2['value'], yerr=self.vis2['error'],
             fmt='o', ms=3, color='black', alpha=0.7, label='V2 data')
         order = np.argsort(spatial_frequency)
-        axes[1].scatter(
+        vis_axis.scatter(
             spatial_frequency[order], models['vis2'][order], s=11,
             color='tab:red', label='Best model')
-        axes[1].set(xlabel='Spatial frequency [Mlambda]', ylabel='V2')
-        axes[1].grid(True, alpha=0.25)
-        axes[1].legend()
-        fig.suptitle(
-            f'chi2_SED/N={breakdown["sed_chi2_per_point"]:.4g}; '
-            f'chi2_V2/N={breakdown["vis2_chi2_per_point"]:.4g}')
+        vis_axis.set(xlabel='Spatial frequency [Mlambda]', ylabel='V2')
+        vis_axis.grid(True, alpha=0.25)
+        vis_axis.legend()
+        if self.fit_sed:
+            title = (f'chi2_SED/N={breakdown["sed_chi2_per_point"]:.4g}; '
+                     f'chi2_V2/N={breakdown["vis2_chi2_per_point"]:.4g}')
+        else:
+            title = f'chi2_V2/N={breakdown["vis2_chi2_per_point"]:.4g}'
+        fig.suptitle(title)
         fig.tight_layout()
         return fig

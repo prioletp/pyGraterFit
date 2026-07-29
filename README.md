@@ -84,7 +84,7 @@ fitter.plot_best_fit().savefig("best_fit.png", dpi=150)
 | Single ring, one composition, SED | `SingleRingSEDScipyFitter` | `SingleRingSEDMCMCFitter` | `SingleRingSEDNestedFitter` |
 | Multi-ring additive SED | `MultiRingSEDScipyFitter` | `MultiRingSEDMCMCFitter` | `MultiRingSEDNestedFitter` |
 | Multi-ring correlated flux, optional SED | `MultiRingSEDCorrelatedFluxFitter` | `MultiRingSEDCorrelatedFluxFitter` | `MultiRingSEDCorrelatedFluxNestedFitter` |
-| Multi-ring SED plus squared visibilities from images | - | `MultiRingSEDVisibilityMCMCFitter` | - |
+| Multi-ring SED plus squared visibilities from images | - | `MultiRingSEDVisibilityMCMCFitter` | `MultiRingSEDVisibilityNestedFitter` |
 
 Prefer top-level imports:
 
@@ -456,7 +456,9 @@ For one-composition multi-ring correlated-flux fits, pass a single-entry
 ## Image-based squared-visibility fits
 
 For V2 data calculated from pyGrater images, use the same compact multi-ring,
-multi-composition constructor as the additive SED fitters. Each ring/material
+multi-composition constructor as the additive SED fitters.  The SED arrays
+are optional; omit `sed_wavelengths`, `sed_fluxes`, and `sed_flux_errors`
+for a visibility-only fit. Each ring/material
 pair is still evaluated as its own physical component, but materials in the
 same ring share geometry by default and only differ in their dust
 normalization.
@@ -492,7 +494,9 @@ fitter.run_mcmc(
 Use explicit `components`, `params_by_component`, and `component_groups` only
 for irregular models, for example when a material appears in one ring but not
 another. Keep `stellar_angular_diameter_mas` in its dedicated constructor
-argument instead of putting it inside `ring_params`.
+argument instead of putting it inside `ring_params`.  `image_wavelengths`
+may contain any positive wavelengths you choose; each observation is evaluated
+using the nearest image plane.
 
 ## Plotting and command-line helpers
 
