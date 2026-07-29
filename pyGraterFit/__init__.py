@@ -24,6 +24,10 @@ _PUBLIC_CLASSES = {
         "pyGraterFit.fitters"),
     "MultiRingSEDCorrelatedFluxNestedFitter": (
         "pyGraterFit.fitters"),
+    "MultiRingSEDVisibilityMCMCFitter": (
+        "pyGraterFit.fitters"),
+    "MultiComponentSEDVisibilityMCMCFitter": (
+        "pyGraterFit.fitters"),
     "FOVAdditiveSEDMCMCFitter": (
         "pyGraterFit.fitters.multi_component_fov_sed_mcmc"),
     "MultiComponentSEDMCMCFitter": (

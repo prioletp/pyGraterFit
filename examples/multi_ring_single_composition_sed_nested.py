@@ -1,35 +1,37 @@
-"""Multi-ring, single-composition SED fit with dynesty.
+"""Complete multi-ring, single-composition SED nested example."""
 
-This example is the nested-sampling version of
-``multi_ring_single_composition_sed_scipy.py``.  Each physical ring is one
-additive SED component, so there are no composition-fraction parameters.
-"""
+from pathlib import Path
 
 import numpy as np
 
-from pyGraterFit import MultiRingSEDNestedFitter
 from pyGrater import Grain, Star
 from pyGrater.density import two_power_law
 from pyGrater.phase_functions import isotropic
 from pyGrater.size_distributions import power_law_distribution
+from pyGraterFit.fitters.multi_component_sed_dynesty import AdditiveSEDNestedFitter
 
 
-star = Star(star_name="HD113766")
-grain = Grain(composition="c_olivine_Fe_Poor")
-
-wavelengths = np.array([8.0, 10.0, 12.0])
-observed_flux = np.array([1.0, 1.2, 1.1])
-flux_error = np.full_like(observed_flux, 0.1)
+RUN_MODE = "build_only"  # "build_only", "fresh", "resume", or "load"
+OUTPUT_PREFIX = "multi_ring_single_composition_nested"
+CHECKPOINT = Path(f"{OUTPUT_PREFIX}.checkpoint")
+RESULTS = Path(f"{OUTPUT_PREFIX}_results.npz")
 
 
 def scale_height(parameters):
     return 0.05 * parameters["r0"]
 
 
-common_ring_parameters = {
+star = Star(star_name="HD113766")
+grain = Grain(redo_Q=False, composition="c_olivine_Fe_Poor")
+materials = {"olivine": grain}
+wavelengths = np.array([8.0, 10.0, 12.0], dtype=float)
+observed_flux = np.array([1.0, 1.2, 1.1], dtype=float)
+flux_error = np.array([0.1, 0.1, 0.1], dtype=float)
+
+common = {
     "h0": scale_height,
     "alphain": 10.0,
-    "alphaout": (-10.0, -1.0001),
+    "alphaout": (-10.0, -1.0),
     "gamma": 2.0,
     "beta": 1.0,
     "itilt": 0.0,
@@ -40,28 +42,15 @@ common_ring_parameters = {
     "kappa": (1.0, 5.0),
     "N_sizes_integral": 100,
     "g": 0.0,
-    "A_norm": (1e25, 1e38),
+}
+ring_params = {
+    "inner_ring": {**common, "r0": (0.01, 2.0)},
+    "outer_ring": {**common, "r0": (2.0, 100.0)},
 }
 
-components = {
-    "inner_ring": grain,
-    "outer_ring": grain,
-}
-
-params_by_component = {
-    "inner_ring": {
-        **common_ring_parameters,
-        "r0": (0.01, 2.0),
-    },
-    "outer_ring": {
-        **common_ring_parameters,
-        "r0": (2.0, 100.0),
-    },
-}
-
-fitter = MultiRingSEDNestedFitter(
-    components=components,
-    params_by_component=params_by_component,
+fitter = AdditiveSEDNestedFitter(
+    materials=materials,
+    ring_params=ring_params,
     star=star,
     density_distribution=two_power_law,
     size_distribution=power_law_distribution,
@@ -69,22 +58,32 @@ fitter = MultiRingSEDNestedFitter(
     wavelengths=wavelengths,
     fluxes=observed_flux,
     fluxes_err=flux_error,
+    normalization_range=(1e25, 1e38),
     use_log_params=True,
     N_distances=300,
 )
 
-fitter.run(
-    npoints=300,
-    method="multi",
-    sample="rslice",
-    dynamic=True,
-    dlogz=0.5,
-    checkpoint_file="multi_ring_single_composition_nested.checkpoint",
-    checkpoint_every=300,
-    resume=False,
-)
+if RUN_MODE == "fresh":
+    fitter.run(
+        npoints=300, method="multi", sample="rslice", dynamic=True,
+        dlogz=0.5, checkpoint_file=CHECKPOINT, checkpoint_every=300,
+        resume=False)
+    fitter.save_results(RESULTS)
+elif RUN_MODE == "resume":
+    fitter.resume_backend_nested(
+        CHECKPOINT, npoints=300, method="multi", sample="rslice",
+        dynamic=True, dlogz=0.5, checkpoint_every=300)
+    fitter.save_results(RESULTS)
+elif RUN_MODE == "load":
+    fitter.load_results(RESULTS)
 
-fitter.summary(include_mass_abundances=True)
-print(fitter.format_component_mass_abundances(), end="")
-fitter.plot_best_fit().savefig(
-    "multi_ring_single_composition_nested_best_fit.png", dpi=150)
+if RUN_MODE != "build_only":
+    fitter.summary(include_mass_abundances=True)
+    print(fitter.format_component_mass_abundances(), end="")
+    fitter.plot_nested_diagnostics(
+        f"{OUTPUT_PREFIX}_plots", prefix=OUTPUT_PREFIX)
+    fitter.corner_plot(max_samples=5000).savefig(
+        f"{OUTPUT_PREFIX}_corner.png", dpi=150)
+    fitter.plot_best_fit().savefig(f"{OUTPUT_PREFIX}_best_fit.png", dpi=150)
+else:
+    print("Nested fitter built. Set RUN_MODE='fresh' to sample.")

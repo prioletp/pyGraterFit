@@ -72,6 +72,14 @@ _PUBLIC_CLASSES = {
         "pyGraterFit.fitters.multi_component_sed_scipy",
         "AdditiveSEDScipyFitter",
     ),
+    "MultiRingSEDVisibilityMCMCFitter": (
+        "pyGraterFit.fitters.multi_component_sed_visibility_mcmc",
+        "SEDVisibilityMCMCFitter",
+    ),
+    "MultiComponentSEDVisibilityMCMCFitter": (
+        "pyGraterFit.fitters.multi_component_sed_visibility_mcmc",
+        "SEDVisibilityMCMCFitter",
+    ),
     "SEDCorrelatedFluxNestedFitter": (
         "pyGraterFit.fitters.single_ring_sed_correlated_flux_dynesty",
         "SEDCorrelatedFluxNestedFitter",

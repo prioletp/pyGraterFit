@@ -17,6 +17,7 @@ from scipy.optimize import differential_evolution, dual_annealing, minimize
 
 from pyGraterFit.fitters.multi_component_sed_mcmc import (
     AdditiveSEDMCMCFitter,
+    _components_from_ring_materials,
 )
 from pyGrater import Image
 from pyGraterFit.utils.interferometry import (
@@ -126,9 +127,10 @@ class SEDVisibilityMCMCFitter(
         'itilt', 'PA', 'omega')
 
     def __init__(
-            self, components, star, density_distribution, size_distribution,
-            scattering_phase_function, sed_wavelengths, sed_fluxes,
-            sed_flux_errors, vis2, params_by_component,
+            self, components=None, star=None, density_distribution=None,
+            size_distribution=None, scattering_phase_function=None,
+            sed_wavelengths=None, sed_fluxes=None, sed_flux_errors=None,
+            vis2=None, params_by_component=None,
             shared_parameter_names=(), prior_ranges_by_component=None,
             shared_prior_ranges=None, best_fit_values=None,
             method='Nelder-Mead', use_log_params=True, N_distances=400,
@@ -137,13 +139,45 @@ class SEDVisibilityMCMCFitter(
             image_wavelengths=None, image_settings=None,
             include_unresolved_star=True, maximum_wavelength_mismatch=0.0,
             fft_padding_factor=4, sed_model_kwargs=None,
-            mass_abundance_groups=None,
+            mass_abundance_groups=None, share_spatial_grid=True,
+            normalization_mode='independent', normalization_groups=None,
+            normalization_total_ranges=None,
             stellar_visibility_model='point_source',
-            stellar_angular_diameter_mas=0.0):
+            stellar_angular_diameter_mas=0.0,
+            materials=None, ring_params=None,
+            normalization_range=(1e25, 1e38),
+            mass_abundance_by_ring=True):
         if stellar_visibility_model not in ('point_source', 'uniform_disk'):
             raise ValueError(
                 'stellar_visibility_model must be "point_source" or '
                 '"uniform_disk".')
+        if components is None and materials is not None and ring_params is not None:
+            if any(STELLAR_DIAMETER_PARAMETER in parameters
+                   for parameters in ring_params.values()):
+                raise ValueError(
+                    f'Pass {STELLAR_DIAMETER_PARAMETER!r} as '
+                    'stellar_angular_diameter_mas, not inside ring_params.')
+            expanded = _components_from_ring_materials(
+                materials, ring_params,
+                normalization_range=normalization_range,
+                normalization_total_ranges=normalization_total_ranges,
+                mass_abundance_by_ring=mass_abundance_by_ring)
+            components = expanded['components']
+            params_by_component = expanded['params_by_component']
+            if component_groups is None:
+                component_groups = expanded['component_groups']
+            if not group_shared_parameter_names:
+                group_shared_parameter_names = expanded[
+                    'group_shared_parameter_names']
+            if mass_abundance_groups is None:
+                mass_abundance_groups = expanded['mass_abundance_groups']
+            if normalization_groups is None:
+                normalization_groups = expanded['normalization_groups']
+            if normalization_total_ranges is None:
+                normalization_total_ranges = expanded[
+                    'normalization_total_ranges']
+            if normalization_mode == 'independent':
+                normalization_mode = 'group_total_fraction'
         if stellar_visibility_model == 'uniform_disk':
             if not include_unresolved_star:
                 raise ValueError(
@@ -152,6 +186,10 @@ class SEDVisibilityMCMCFitter(
                 raise ValueError(
                     f'Pass {STELLAR_DIAMETER_PARAMETER} through its dedicated '
                     'constructor argument, not shared_parameter_names.')
+            if params_by_component is None:
+                raise ValueError(
+                    'Uniform-disk stellar visibility requires either '
+                    'materials/ring_params or explicit params_by_component.')
             params_by_component = {
                 name: {**values, STELLAR_DIAMETER_PARAMETER:
                        stellar_angular_diameter_mas}
@@ -178,7 +216,11 @@ class SEDVisibilityMCMCFitter(
             component_groups=component_groups,
             group_shared_parameter_names=group_shared_parameter_names,
             sed_model_kwargs=sed_model_kwargs,
-            mass_abundance_groups=mass_abundance_groups)
+            mass_abundance_groups=mass_abundance_groups,
+            share_spatial_grid=share_spatial_grid,
+            normalization_mode=normalization_mode,
+            normalization_groups=normalization_groups,
+            normalization_total_ranges=normalization_total_ranges)
 
         self.vis2 = _validate_vis2(vis2)
         self._inv_vis2_error = 1.0 / self.vis2['error']

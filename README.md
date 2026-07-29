@@ -84,6 +84,7 @@ fitter.plot_best_fit().savefig("best_fit.png", dpi=150)
 | Single ring, one composition, SED | `SingleRingSEDScipyFitter` | `SingleRingSEDMCMCFitter` | `SingleRingSEDNestedFitter` |
 | Multi-ring additive SED | `MultiRingSEDScipyFitter` | `MultiRingSEDMCMCFitter` | `MultiRingSEDNestedFitter` |
 | Multi-ring correlated flux, optional SED | `MultiRingSEDCorrelatedFluxFitter` | `MultiRingSEDCorrelatedFluxFitter` | `MultiRingSEDCorrelatedFluxNestedFitter` |
+| Multi-ring SED plus squared visibilities from images | - | `MultiRingSEDVisibilityMCMCFitter` | - |
 
 Prefer top-level imports:
 
@@ -451,6 +452,47 @@ fitter.run(npoints=800, method="multi", sample="rslice", dynamic=True)
 For one-composition multi-ring correlated-flux fits, pass a single-entry
 `materials` dictionary or use explicit `components` and
 `params_by_component`.
+
+## Image-based squared-visibility fits
+
+For V2 data calculated from pyGrater images, use the same compact multi-ring,
+multi-composition constructor as the additive SED fitters. Each ring/material
+pair is still evaluated as its own physical component, but materials in the
+same ring share geometry by default and only differ in their dust
+normalization.
+
+```python
+from pyGraterFit import MultiRingSEDVisibilityMCMCFitter
+
+fitter = MultiRingSEDVisibilityMCMCFitter(
+    materials=materials,
+    ring_params=ring_params,
+    star=star,
+    density_distribution=two_power_law,
+    size_distribution=power_law_distribution,
+    scattering_phase_function=phase_function,
+    sed_wavelengths=sed_wavelengths,
+    sed_fluxes=sed_fluxes,
+    sed_flux_errors=sed_flux_errors,
+    vis2=vis2_data,
+    image_settings={"nx": 128, "ny": 128, "FOV_AU": 20.0, "nl": 101},
+    normalization_range=(1e28, 1e38),
+    stellar_visibility_model="uniform_disk",
+    stellar_angular_diameter_mas=stellar_diameter_mas,
+)
+
+fitter.fit(maxiter=500)
+fitter.run_mcmc(
+    n_steps=5000,
+    backend_path="sed_vis2_backend.h5",
+    initialization="best_fit",
+)
+```
+
+Use explicit `components`, `params_by_component`, and `component_groups` only
+for irregular models, for example when a material appears in one ring but not
+another. Keep `stellar_angular_diameter_mas` in its dedicated constructor
+argument instead of putting it inside `ring_params`.
 
 ## Plotting and command-line helpers
 

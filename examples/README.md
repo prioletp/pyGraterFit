@@ -44,3 +44,11 @@ For production fits, always check:
 The main package README explains all developer options in more detail,
 including `SAMPLE`, `METHOD`, grouped composition fractions, caching,
 parallelization, checkpointing, and likelihood/evidence handling.
+
+- `additive_sed_visibility_mcmc.py`: template for fitting an SED plus image-based squared visibilities with the same `materials=...` and `ring_params=...` interface.
+
+- `additive_sed_correlated_flux_mcmc.py`: complete MCMC template for correlated fluxes alone or correlated fluxes plus an SED.
+
+- `additive_sed_correlated_flux_nested.py`: nested-sampling counterpart for the correlated-flux fitter.
+
+- `fov_additive_sed_mcmc.py`: complete template for fitting SED points with instrument-dependent field-of-view transmission.
